@@ -1,0 +1,74 @@
+groups: []
+resources:
+- name: bosh-deployment
+  type: git
+  source:
+    uri: https://github.com/cloudfoundry/bosh-deployment.git
+  check_every: 2m
+- name: bpm-compiled
+  type: s3
+  source:
+    bucket: control-tower-compiled-releases
+    regexp: bpm-(.*).tgz
+    region_name: eu-west-1
+- name: build-metadata
+  type: build-metadata
+  source: {}
+- name: pcf-ops-image
+  type: docker-image
+  source:
+    repository: engineerbetter/pcf-ops
+- name: prometheus-release
+  type: bosh-io-release
+  source:
+    repository: cloudfoundry-community/prometheus-boshrelease
+resource_types:
+- name: build-metadata
+  type: docker-image
+  source:
+    repository: mastertinner/build-metadata-resource
+jobs:
+- name: promote-versions
+  plan:
+  - aggregate:
+    - get: pcf-ops-image
+      trigger: true
+    - get: bosh-deployment
+    - get: prometheus-release
+    - get: build-metadata
+    - get: bpm-compiled
+  - task: generate-versions
+    config:
+      platform: linux
+      run:
+        path: bash
+        args:
+        - -euc
+        - |
+          fly --target ci \
+            login \
+            --insecure \
+            --concourse-url "$CONCOURSE_URL" \
+            --username "$CONCOURSE_USERNAME" \
+            --password "$CONCOURSE_PASSWORD" > /dev/null 2>&1
+
+          fly -t ci sync  > /dev/null 2>&1
+
+          export ATC_BEARER_TOKEN=$(bosh int --path /targets/ci/token/value ~/.flyrc)
+
+          PIPELINE_NAME=$(<build-metadata/build-pipeline-name)
+
+          team=$(cat build-metadata/build-team-name)
+          job=$(cat build-metadata/build-job-name)
+
+          stopover.v2 ${CONCOURSE_URL} $team ${PIPELINE_NAME} $job $(cat build-metadata/build-name)
+      inputs:
+      - name: build-metadata
+      - name: bosh-deployment
+      - name: prometheus-release
+      - name: bpm-compiled
+    params:
+      CONCOURSE_PASSWORD: ((concourse_password))
+      CONCOURSE_URL: ((concourse_url))
+      CONCOURSE_USERNAME: ((concourse_username))
+    image: pcf-ops-image
